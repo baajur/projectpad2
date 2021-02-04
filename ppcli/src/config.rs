@@ -1,5 +1,6 @@
 // bits lifted from the skim project
 use crate::database::LinkedItem;
+use std::borrow::Cow;
 use std::fs::File;
 use std::io::prelude::*;
 use std::io::{BufReader, BufWriter};
@@ -49,12 +50,16 @@ fn history_file_path() -> PathBuf {
     path
 }
 
-pub fn read_history() -> Result<Vec<(String, LinkedItem)>, std::io::Error> {
+pub fn read_history() -> Result<(Vec<String>, Vec<LinkedItem>), std::io::Error> {
     let file = File::open(history_file_path())?;
-    BufReader::new(file)
-        .lines()
-        .map(|l| Ok(parse_history_line(&l?)))
-        .collect()
+    let mut history_strs = vec![];
+    let mut history_linked_items = vec![];
+    for line in BufReader::new(file).lines() {
+        let (history_str, linked_item) = parse_history_line(&line?);
+        history_strs.push(history_str);
+        history_linked_items.push(linked_item);
+    }
+    Ok((history_strs, history_linked_items))
 }
 
 fn parse_history_line(line: &str) -> (String, LinkedItem) {
@@ -73,21 +78,26 @@ fn parse_history_line(line: &str) -> (String, LinkedItem) {
 
 // TODO maybe i should also write which action was used in the history, for ranking, maybe. let's not
 // prop up downloading the config file, if i always just want to edit it?
-fn serialize_history_line(line: (String, LinkedItem)) -> String {
+fn serialize_history_line<'a>(line: (&'a String, &LinkedItem)) -> Cow<'a, str> {
     match line.1 {
-        LinkedItem::None => line.0,
-        LinkedItem::ServerId(id) => format!("S;{};{}", id, line.0),
-        LinkedItem::ProjectPoiId(id) => format!("P;{};{}", id, line.0),
-        LinkedItem::ServerPoiId(id) => format!("SP;{};{}", id, line.0),
+        LinkedItem::None => Cow::Borrowed(line.0),
+        LinkedItem::ServerId(id) => Cow::Owned(format!("S;{};{}", id, line.0)),
+        LinkedItem::ProjectPoiId(id) => Cow::Owned(format!("P;{};{}", id, line.0)),
+        LinkedItem::ServerPoiId(id) => Cow::Owned(format!("SP;{};{}", id, line.0)),
     }
 }
 
 pub fn write_history(
-    orig_history: &[(String, LinkedItem)],
+    orig_history_strs: &[String],
+    orig_linked_items: &[LinkedItem],
     latest: (&str, LinkedItem),
     limit: usize,
 ) -> Result<(), std::io::Error> {
-    if orig_history.last().map(|(l, i)| (l.as_str(), *i)) == Some(latest) {
+    let orig_history: Vec<_> = orig_history_strs
+        .iter()
+        .zip(orig_linked_items.iter())
+        .collect();
+    if orig_history.last().map(|(l, i)| (l.as_str(), **i)) == Some(latest) {
         // no point of having at the end of the history 5x the same command...
         return Ok(());
     }
@@ -99,7 +109,8 @@ pub fn write_history(
     };
 
     let mut history = orig_history[start_index..].to_vec();
-    history.push((latest.0.to_string(), latest.1));
+    let latest_str = latest.0.to_string();
+    history.push((&latest_str, &latest.1));
 
     let file = File::create(history_file_path())?;
     let mut file = BufWriter::new(file);
