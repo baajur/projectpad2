@@ -1,4 +1,5 @@
 // bits lifted from the skim project
+use crate::database::LinkedItem;
 use std::fs::File;
 use std::io::prelude::*;
 use std::io::{BufReader, BufWriter};
@@ -48,21 +49,49 @@ fn history_file_path() -> PathBuf {
     path
 }
 
-pub fn read_history() -> Result<Vec<String>, std::io::Error> {
+pub fn read_history() -> Result<Vec<(String, LinkedItem)>, std::io::Error> {
     let file = File::open(history_file_path())?;
-    BufReader::new(file).lines().collect()
+    BufReader::new(file)
+        .lines()
+        .map(|l| Ok(parse_history_line(&l?)))
+        .collect()
+}
+
+fn parse_history_line(line: &str) -> (String, LinkedItem) {
+    let elts: Vec<_> = line.splitn(3, ';').collect();
+    match (
+        elts.len(),
+        elts.get(0),
+        elts.get(1).and_then(|i| i.parse::<i32>().ok()),
+    ) {
+        (3, Some(&"S"), Some(id)) => (elts[2].to_owned(), LinkedItem::ServerId(id)),
+        (3, Some(&"P"), Some(id)) => (elts[2].to_owned(), LinkedItem::ProjectPoiId(id)),
+        (3, Some(&"SP"), Some(id)) => (elts[2].to_owned(), LinkedItem::ServerPoiId(id)),
+        _ => (line.to_owned(), LinkedItem::None),
+    }
+}
+
+// TODO maybe i should also write which action was used in the history, for ranking, maybe. let's not
+// prop up downloading the config file, if i always just want to edit it?
+fn serialize_history_line(line: (String, LinkedItem)) -> String {
+    match line.1 {
+        LinkedItem::None => line.0,
+        LinkedItem::ServerId(id) => format!("S;{};{}", id, line.0),
+        LinkedItem::ProjectPoiId(id) => format!("P;{};{}", id, line.0),
+        LinkedItem::ServerPoiId(id) => format!("SP;{};{}", id, line.0),
+    }
 }
 
 pub fn write_history(
-    orig_history: &[String],
-    latest: &str,
+    orig_history: &[(String, LinkedItem)],
+    latest: (&str, LinkedItem),
     limit: usize,
 ) -> Result<(), std::io::Error> {
-    if orig_history.last().map(|l| l.as_str()) == Some(latest) {
+    if orig_history.last().map(|(l, i)| (l.as_str(), *i)) == Some(latest) {
         // no point of having at the end of the history 5x the same command...
         return Ok(());
     }
-    let additional_lines = if latest.trim().is_empty() { 0 } else { 1 };
+    let additional_lines = if latest.0.trim().is_empty() { 0 } else { 1 };
     let start_index = if orig_history.len() + additional_lines > limit {
         orig_history.len() + additional_lines - limit
     } else {
@@ -70,10 +99,17 @@ pub fn write_history(
     };
 
     let mut history = orig_history[start_index..].to_vec();
-    history.push(latest.to_string());
+    history.push((latest.0.to_string(), latest.1));
 
     let file = File::create(history_file_path())?;
     let mut file = BufWriter::new(file);
-    file.write_all(history.join("\n").as_bytes())?;
+    file.write_all(
+        history
+            .into_iter()
+            .map(serialize_history_line)
+            .collect::<Vec<_>>()
+            .join("\n")
+            .as_bytes(),
+    )?;
     Ok(())
 }

@@ -1891,6 +1891,7 @@ version = "2.2.1"
 dependencies = [
  "diesel",
  "dirs 3.0.1",
+ "itertools 0.10.0",
  "keyring",
  "libc",
  "projectpadsql",

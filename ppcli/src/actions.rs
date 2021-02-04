@@ -1,4 +1,4 @@
-use crate::database::{ItemOfInterest, ItemType};
+use crate::database::{ItemOfInterest, ItemType, LinkedItem};
 use projectpadsql::models::{InterestType, RunOn, ServerAccessType};
 use std::borrow::Cow;
 
@@ -224,7 +224,7 @@ pub fn get_value(item: ItemOfInterest) -> Vec<Action> {
                 item,
             }]
         }
-        i if i.sql_table.as_str() == "server" && is_ssh_access(i) => {
+        i if matches!(i.linked_item, LinkedItem::ServerId(_)) && is_ssh_access(i) => {
             vec![Action::new("ssh shell", get_value_server_ssh, item)]
         }
         i if [

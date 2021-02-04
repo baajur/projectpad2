@@ -1,8 +1,10 @@
-use database::DisplayMode;
+use database::{DisplayMode, LinkedItem};
 use diesel::prelude::*;
+use itertools::Itertools;
 use regex::Regex;
 use skim::prelude::*;
 use std::borrow::Borrow;
+use std::collections::HashMap;
 use std::env;
 use std::io::Write;
 use std::path::Path;
@@ -195,6 +197,7 @@ pub fn main() {
     }
 
     let history = config::read_history().unwrap_or_else(|_| vec![]);
+    let history_strs: Vec<_> = history.iter().map(|l| l.0.to_string()).collect(); // TODO shame to copy these strings
     let options = SkimOptionsBuilder::default()
         .bind(vec!["ctrl-p:previous-history", "ctrl-n:next-history"])
         .expect(Some("ctrl-y,alt-enter".to_string()))
@@ -202,7 +205,9 @@ pub fn main() {
         // .multi(true)
         .preview(Some("")) // preview should be specified to enable preview window
         .preview_window(Some("up:2"))
-        .query_history(&history)
+        // .layout("reverse-list")
+        // .reverse(true)
+        .query_history(&history_strs)
         .exact(true)
         .case(CaseMatching::Ignore)
         .build()
@@ -211,20 +216,22 @@ pub fn main() {
     let (tx_item, rx_item): (SkimItemSender, SkimItemReceiver) = unbounded();
 
     let display_mode = flag_options.display_mode;
-    std::thread::spawn(move || database::load_items(&conn, display_mode, &tx_item));
+    let ranked_items = get_ranked_items(&history);
+    std::thread::spawn(move || database::load_items(&conn, display_mode, &tx_item, &ranked_items));
 
     let (selected_items, query, accept_key) = Skim::run_with(&options, Some(rx_item))
         .map(|out| (out.selected_items, out.query, out.final_key))
         .unwrap_or_else(|| (Vec::new(), "".to_string(), Key::Enter));
 
     if let Some(item) = selected_items.get(0) {
-        if !query.is_empty() {
-            config::write_history(&history, &query, 100).unwrap();
-        }
-
         // this pattern from the skim apidocs for SkimItem, and also
         // https://stackoverflow.com/a/26128001/516188
         let myitem = (**item).as_any().downcast_ref::<MyItem>().unwrap();
+
+        if !query.is_empty() {
+            let item_of_interest = &myitem.inner.item;
+            config::write_history(&history, (&query, item_of_interest.linked_item), 100).unwrap();
+        }
 
         let action = &myitem.inner;
         let action_str = &(action.get_string)(&action.item);
@@ -265,6 +272,16 @@ pub fn main() {
         }
         _ => {}
     }
+}
+
+fn get_ranked_items(history: &[(String, LinkedItem)]) -> HashMap<LinkedItem, usize> {
+    let mut history_items: Vec<_> = history.iter().map(|i| i.1).collect();
+    history_items.sort();
+    history_items
+        .into_iter()
+        .dedup_with_count()
+        .map(|(count, item)| (item, count))
+        .collect()
 }
 
 fn run_command_folder(action: &actions::Action) -> Option<PathBuf> {
